@@ -12,33 +12,6 @@ This server runs **one Stockfish engine process per socket connection** and stre
 
 ---
 
-## Table of Contents
-
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Environment Variables](#environment-variables)
-- [Run](#run)
-- [Health Check](#health-check)
-- [Socket Events API](#socket-events-api)
-  - [engine:ready](#engineready)
-  - [analysis:start](#analysisstart)
-  - [analysis:started](#analysisstarted)
-  - [analysis:update](#analysisupdate)
-  - [analysis:updateGrouped](#analysisupdategrouped)
-  - [analysis:done](#analysisdone)
-  - [analysis:stop](#analysisstop)
-  - [analysis:stopped](#analysisstopped)
-  - [analysis:error](#analysiserror)
-- [Client Examples](#client-examples)
-- [Smart Updates (Traffic Reduction)](#smart-updates-traffic-reduction)
-- [MultiPV Grouping (Frontend Friendly)](#multipv-grouping-frontend-friendly)
-- [Security / Safety Notes](#security--safety-notes)
-- [Notes](#notes)
-- [License](#license)
-
----
-
 ## Features
 
 - **Stockfish UCI engine** integration via Node child process
