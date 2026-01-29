@@ -176,8 +176,10 @@ io.on("connection", async (socket) => {
   /**
    * Smart update state (only used when smartUpdates=true)
    */
-  let lastEmitAt = 0;
-  const lastSentByPv = new Map(); // key=multiPv, value=last emitted info
+  const latestByPv = new Map(); // mpv -> latest info (always updated)
+  const lastSentByPv = new Map(); // mpv -> last info used for diff logic
+  const lastEmittedByPv = new Map(); // mpv -> last emitted depth
+  const lastEmitAtByPv = new Map(); // mpv -> timestamp
 
   /**
    * Engine callbacks
@@ -185,6 +187,15 @@ io.on("connection", async (socket) => {
   engine.onInfo = (info) => {
     if (!info.pv?.length && info.eval == null) {
       return; // skip useless traffic
+    }
+
+    const mpv = info.multiPv || 1;
+
+    // 🔹 ALWAYS store latest info (NO throttling here)
+    latestByPv.set(mpv, info);
+
+    if (sessionConfig.groupPv) {
+      groupedPvState.lines[mpv] = info;
     }
 
     /**
@@ -196,13 +207,10 @@ io.on("connection", async (socket) => {
         return;
       }
 
-      const mpv = info.multiPv || 1;
-      groupedPvState.lines[mpv] = info;
-
-      socket.emit("analysis:updateGrouped", {
-        fen: groupedPvState.fen,
-        lines: groupedPvState.lines,
-      });
+      // socket.emit("analysis:updateGrouped", {
+      //   fen: groupedPvState.fen,
+      //   lines: groupedPvState.lines,
+      // });
       return;
     }
 
@@ -210,7 +218,6 @@ io.on("connection", async (socket) => {
      * ✅ SMART UPDATES MODE
      * Reduce websocket traffic using throttling + diff logic.
      */
-    const mpv = info.multiPv || 1;
     const prev = lastSentByPv.get(mpv);
 
     const depth = typeof info.depth === "number" ? info.depth : 0;
@@ -224,13 +231,14 @@ io.on("connection", async (socket) => {
     const interval = Math.max(sessionConfig.minIntervalMs, dynamicInterval);
     const t = nowMs();
 
-    const timeOk = t - lastEmitAt >= interval;
+    const lastEmitAtPv = lastEmitAtByPv.get(mpv) || 0;
+    const timeOk = t - lastEmitAtPv >= interval;
 
     const depthOk =
       !prev ||
       (typeof prev.depth === "number" &&
         typeof info.depth === "number" &&
-        info.depth >= prev.depth + sessionConfig.depthStep);
+        info.depth > prev.depth); // 🔥 only deeper, no stepping spam
 
     const evalOk =
       !prev ||
@@ -240,19 +248,19 @@ io.on("connection", async (socket) => {
 
     const pvOk = !prev || isPvChanged(prev.pv, info.pv);
 
-    // Emit only if throttled AND meaningful change happened
     const shouldEmit = timeOk && (depthOk || evalOk || pvOk);
     if (!shouldEmit) return;
 
-    lastEmitAt = t;
+    // 🔹 Mark emitted
+    lastEmitAtByPv.set(mpv, t);
     lastSentByPv.set(mpv, info);
+    lastEmittedByPv.set(mpv, info.depth);
 
     if (!sessionConfig.groupPv) {
       socket.emit("analysis:update", info);
       return;
     }
 
-    groupedPvState.lines[mpv] = info;
     socket.emit("analysis:updateGrouped", {
       fen: groupedPvState.fen,
       lines: groupedPvState.lines,
@@ -261,6 +269,27 @@ io.on("connection", async (socket) => {
 
   engine.onBestMove = ({ bestMove }) => {
     if (activeAnalysisCount > 0) activeAnalysisCount -= 1;
+    if (sessionConfig.smartUpdates) {
+      for (const [mpv, info] of latestByPv.entries()) {
+        if (mpv > sessionConfig.requestedMultiPv) continue;
+
+        const lastEmittedDepth = lastEmittedByPv.get(mpv);
+
+        // emit ONLY if final depth was never sent
+        if (info.depth !== lastEmittedDepth) {
+          if (!sessionConfig.groupPv) {
+            socket.emit("analysis:update", info);
+          }
+        }
+      }
+
+      // if (sessionConfig.groupPv) {
+      //   socket.emit("analysis:updateGrouped", {
+      //     fen: groupedPvState.fen,
+      //     lines: groupedPvState.lines,
+      //   });
+      // }
+    }
 
     socket.emit("analysis:done", {
       bestMove,
@@ -388,6 +417,7 @@ io.on("connection", async (socket) => {
         fallback: DEFAULT_ENGINE_MULTIPV,
       });
 
+      sessionConfig.requestedMultiPv = safeMultiPv;
       /**
        * Clamp analysis request values (prevents abuse)
        */
@@ -433,6 +463,11 @@ io.on("connection", async (socket) => {
           typeof depthStep === "number" && depthStep > 0 ? depthStep : 1,
       };
 
+      latestByPv.clear();
+      lastSentByPv.clear();
+      lastEmittedByPv.clear();
+      lastEmitAtByPv.clear();
+
       /**
        * Reset grouping + smart update states
        */
@@ -440,7 +475,7 @@ io.on("connection", async (socket) => {
         resetGroupedPv(fen);
       }
 
-      lastEmitAt = 0;
+      // lastEmitAt = 0;
       lastSentByPv.clear();
 
       /**
